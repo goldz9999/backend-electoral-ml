@@ -138,40 +138,57 @@ async def check_if_voted(dni: str, email: str):
 
 @router.get("/results")
 async def get_results():
-    """Resultados electorales en tiempo real"""
-    votes = supabase_client.table("votes") \
-        .select("candidate_id") \
-        .eq("is_valid", True) \
-        .execute()
+    try:
+        # === OBTENER VOTOS VÁLIDOS ===
+        votes_res = supabase_client.table("votes") \
+            .select("candidate_id") \
+            .eq("is_valid", True) \
+            .execute()
 
-    from collections import Counter
-    vote_counts = Counter([v["candidate_id"] for v in votes.data])
+        vote_counts = {}
+        if votes_res.data:
+            from collections import Counter
+            vote_counts = Counter(v["candidate_id"] for v in votes_res.data)
+        total_votes = len(votes_res.data)
 
-    candidates = supabase_client.table("candidates") \
-        .select("id, name, party") \
-        .execute()
+        # === OBTENER TODOS LOS CANDIDATOS ===
+        candidates_res = supabase_client.table("candidates") \
+            .select("id, name, party") \
+            .execute()
 
-    total_votes = len(votes.data)
-    results = []
+        if not candidates_res.data:
+            return {
+                "results": [],
+                "total_votes": 0,
+                "timestamp": datetime.utcnow().isoformat(),
+                "message": "No hay candidatos registrados"
+            }
 
-    for candidate in candidates.data:
-        count = vote_counts.get(candidate["id"], 0)
-        percentage = (count / total_votes * 100) if total_votes > 0 else 0
-        results.append({
-            "candidate_id": candidate["id"],
-            "name": candidate["name"],
-            "party": candidate["party"],
-            "votes": count,
-            "percentage": round(percentage, 2)
-        })
+        # === CONSTRUIR RESULTADOS (incluso con 0 votos) ===
+        results = []
+        for candidate in candidates_res.data:
+            count = vote_counts.get(candidate["id"], 0)
+            percentage = round((count / total_votes * 100), 2) if total_votes > 0 else 0.00
+            results.append({
+                "candidate_id": candidate["id"],
+                "name": candidate["name"],
+                "party": candidate["party"],
+                "votes": count,
+                "percentage": percentage
+            })
 
-    results.sort(key=lambda x: x["votes"], reverse=True)
+        # Ordenar por votos
+        results.sort(key=lambda x: x["votes"], reverse=True)
 
-    return {
-        "results": results,
-        "total_votes": total_votes,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+        return {
+            "results": results,
+            "total_votes": total_votes,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        print("Error en /results:", str(e))
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 
 @router.get("/candidates")
