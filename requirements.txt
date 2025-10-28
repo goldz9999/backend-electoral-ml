@@ -1,0 +1,22 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+
+# Supabase
+supabase
+
+# Data Processing
+pandas
+numpy
+openpyxl
+
+# Machine Learning
+scikit-learn
+torch
+torchvision
+joblib
+
+# Utilidades
+python-dotenv
