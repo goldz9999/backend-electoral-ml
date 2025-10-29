@@ -18,7 +18,6 @@ class DataCleaningService:
         Detecta: datos nulos, duplicados, outliers, emails inválidos.
         """
         try:
-            # Obtener todos los votos
             votes_result = supabase_client.table("votes").select("*").execute()
             votes = votes_result.data
             
@@ -29,27 +28,42 @@ class DataCleaningService:
                     "total_records": 0
                 }
             
-            # Convertir a DataFrame para análisis
             df = pd.DataFrame(votes)
-            
-            # === ANÁLISIS DE CALIDAD ===
             total_records = len(df)
             
-            # 1. Registros completos (sin campos nulos críticos)
-            critical_fields = ['voter_name', 'voter_email', 'candidate_id']
-            complete_records = df[critical_fields].notna().all(axis=1).sum()
+            # 1. Registros completos (sin campos nulos críticos, incluyendo 'N/A')
+            critical_fields = ['voter_name', 'voter_email', 'voter_dni', 'voter_location']
+            complete_records = 0
+            for _, row in df.iterrows():
+                is_complete = True
+                for field in critical_fields:
+                    val = row.get(field)
+                    if pd.isna(val) or str(val).strip() == '' or str(val).strip().upper() == 'N/A':
+                        is_complete = False
+                        break
+                if is_complete:
+                    complete_records += 1
             
-            # 2. Datos faltantes
-            missing_location = df['voter_location'].isna().sum()
+            # 2. Datos faltantes o con 'N/A'
+            missing_data = 0
+            for field in critical_fields:
+                if field in df.columns:
+                    missing_data += df[field].apply(
+                        lambda x: pd.isna(x) or str(x).strip() == '' or str(x).strip().upper() == 'N/A'
+                    ).sum()
             
-            # 3. Emails válidos (contienen @)
-            valid_emails = df['voter_email'].str.contains('@', na=False).sum()
+            # 3. Emails válidos (contienen @ y no son N/A)
+            valid_emails = df['voter_email'].apply(
+                lambda x: '@' in str(x) and str(x).strip().upper() != 'N/A'
+            ).sum()
             
-            # 4. Duplicados por email
-            duplicates = df.duplicated(subset=['voter_email'], keep=False).sum()
+            # 4. Duplicados por email (excluyendo N/A)
+            df_filtered = df[df['voter_email'].apply(
+                lambda x: pd.notna(x) and str(x).strip().upper() != 'N/A'
+            )]
+            duplicates = df_filtered.duplicated(subset=['voter_email'], keep=False).sum()
             
-            # 5. Outliers (simulado: votos en horas inusuales)
-            # ← FIX: Usar format='mixed' para manejar diferentes formatos
+            # 5. Outliers
             df['voted_at'] = pd.to_datetime(df['voted_at'], format='mixed', errors='coerce')
             df['hour'] = df['voted_at'].dt.hour
             outliers = ((df['hour'] < 6) | (df['hour'] > 23)).sum()
@@ -59,16 +73,14 @@ class DataCleaningService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "total_records": total_records,
                 "complete_records": int(complete_records),
-                "missing_data": int(missing_location),
+                "missing_data": int(missing_data),
                 "valid_emails": int(valid_emails),
                 "duplicates": int(duplicates),
                 "outliers": int(outliers),
                 "quality_score": round((complete_records / total_records) * 100, 2) if total_records > 0 else 0
             }
             
-            # Guardar en tabla data_cleaning_summary
             await DataCleaningService._save_cleaning_summary(quality_report)
-            
             return quality_report
             
         except Exception as e:
@@ -81,11 +93,10 @@ class DataCleaningService:
     @staticmethod
     async def clean_null_data() -> Dict:
         """
-        Limpia votos con datos nulos críticos.
-        PRIMERO guarda en null_data_votes, DESPUÉS elimina de votes.
+        Reemplaza datos nulos con 'N/A'.
+        INCLUYE: voter_name, voter_email, voter_dni, voter_location
         """
         try:
-            # Obtener votos con campos nulos
             votes_result = supabase_client.table("votes").select("*").execute()
             df = pd.DataFrame(votes_result.data)
             
@@ -97,44 +108,79 @@ class DataCleaningService:
                 }
             
             # Identificar registros con problemas
-            null_voter_name = df['voter_name'].isna() | (df['voter_name'].astype(str).str.strip() == '')
-            null_voter_email = df['voter_email'].isna() | (df['voter_email'].astype(str).str.strip() == '')
-            null_candidate = df['candidate_id'].isna()
+            problematic_mask = False
             
-            problematic = null_voter_name | null_voter_email | null_candidate
-            problematic_ids = df[problematic]['id'].tolist()
+            # Verificar cada campo crítico
+            if 'voter_name' in df.columns:
+                null_voter_name = df['voter_name'].isna() | (df['voter_name'].astype(str).str.strip() == '')
+                problematic_mask = problematic_mask | null_voter_name
             
+            if 'voter_email' in df.columns:
+                null_voter_email = df['voter_email'].isna() | (df['voter_email'].astype(str).str.strip() == '')
+                problematic_mask = problematic_mask | null_voter_email
+            
+            if 'voter_dni' in df.columns:
+                null_voter_dni = df['voter_dni'].isna() | (df['voter_dni'].astype(str).str.strip() == '')
+                problematic_mask = problematic_mask | null_voter_dni
+            
+            if 'voter_location' in df.columns:
+                null_voter_location = df['voter_location'].isna() | (df['voter_location'].astype(str).str.strip() == '')
+                problematic_mask = problematic_mask | null_voter_location
+            
+            problematic_ids = df[problematic_mask]['id'].tolist()
             cleaned_count = len(problematic_ids)
             
             if cleaned_count > 0:
-                # PASO 1: Registrar en tabla null_data_votes (PRIMERO)
+                # PASO 1: Registrar en tabla null_data_votes
                 for vote_id in problematic_ids:
                     missing_fields = []
                     vote = df[df['id'] == vote_id].iloc[0]
                     
-                    if pd.isna(vote['voter_name']) or str(vote['voter_name']).strip() == '':
+                    if 'voter_name' in df.columns and (pd.isna(vote['voter_name']) or str(vote['voter_name']).strip() == ''):
                         missing_fields.append('voter_name')
-                    if pd.isna(vote['voter_email']) or str(vote['voter_email']).strip() == '':
+                    
+                    if 'voter_email' in df.columns and (pd.isna(vote['voter_email']) or str(vote['voter_email']).strip() == ''):
                         missing_fields.append('voter_email')
-                    if pd.isna(vote['candidate_id']):
-                        missing_fields.append('candidate_id')
+                    
+                    if 'voter_dni' in df.columns and (pd.isna(vote['voter_dni']) or str(vote['voter_dni']).strip() == ''):
+                        missing_fields.append('voter_dni')
+                    
+                    if 'voter_location' in df.columns and (pd.isna(vote['voter_location']) or str(vote['voter_location']).strip() == ''):
+                        missing_fields.append('voter_location')
                     
                     supabase_client.table("null_data_votes").insert({
                         "vote_id": vote_id,
                         "missing_fields": missing_fields,
-                        "voter_name": vote['voter_name'] if pd.notna(vote['voter_name']) else None,
-                        "voter_email": vote['voter_email'] if pd.notna(vote['voter_email']) else None,
+                        "voter_name": vote.get('voter_name') if pd.notna(vote.get('voter_name')) else None,
+                        "voter_email": vote.get('voter_email') if pd.notna(vote.get('voter_email')) else None,
                         "resolved": True
                     }).execute()
                 
-                # PASO 2: Eliminar de la tabla votes (DESPUÉS)
+                # PASO 2: Actualizar votos con 'N/A' (NO ELIMINAR)
                 for vote_id in problematic_ids:
-                    supabase_client.table("votes").delete().eq("id", vote_id).execute()
+                    vote = df[df['id'] == vote_id].iloc[0]
+                    
+                    update_data = {}
+                    
+                    if 'voter_name' in df.columns and (pd.isna(vote['voter_name']) or str(vote['voter_name']).strip() == ''):
+                        update_data['voter_name'] = 'N/A'
+                    
+                    if 'voter_email' in df.columns and (pd.isna(vote['voter_email']) or str(vote['voter_email']).strip() == ''):
+                        update_data['voter_email'] = 'N/A'
+                    
+                    if 'voter_dni' in df.columns and (pd.isna(vote['voter_dni']) or str(vote['voter_dni']).strip() == ''):
+                        update_data['voter_dni'] = 'N/A'
+                    
+                    if 'voter_location' in df.columns and (pd.isna(vote['voter_location']) or str(vote['voter_location']).strip() == ''):
+                        update_data['voter_location'] = 'N/A'
+                    
+                    if update_data:
+                        supabase_client.table("votes").update(update_data).eq("id", vote_id).execute()
             
             return {
                 "success": True,
                 "cleaned_count": cleaned_count,
-                "message": f"Se eliminaron {cleaned_count} votos con datos nulos (guardados en auditoría)"
+                "message": f"Se reemplazaron {cleaned_count} registros con datos nulos por 'N/A' (guardados en auditoría)"
             }
             
         except Exception as e:
@@ -147,9 +193,7 @@ class DataCleaningService:
     @staticmethod
     async def remove_duplicates() -> Dict:
         """
-        Detecta y elimina votos duplicados por email.
-        PRIMERO guarda en duplicated_votes, DESPUÉS elimina de votes.
-        Mantiene solo el primer voto de cada email.
+        Detecta y elimina votos duplicados por email (excluyendo N/A).
         """
         try:
             votes_result = supabase_client.table("votes").select("*").execute()
@@ -162,30 +206,34 @@ class DataCleaningService:
                     "message": "No hay votos para procesar"
                 }
             
-            # ← FIX: Convertir voted_at con format='mixed'
-            df['voted_at'] = pd.to_datetime(df['voted_at'], format='mixed', errors='coerce')
+            # Filtrar emails válidos (no N/A)
+            df_filtered = df[df['voter_email'].apply(
+                lambda x: pd.notna(x) and str(x).strip().upper() != 'N/A'
+            )].copy()
             
-            # Ordenar por fecha para mantener el primer voto
-            df = df.sort_values('voted_at')
+            if df_filtered.empty:
+                return {
+                    "success": True,
+                    "duplicate_count": 0,
+                    "message": "No hay emails válidos para verificar duplicados"
+                }
             
-            # Encontrar duplicados (mantener el primero con keep='first')
-            duplicates = df[df.duplicated(subset=['voter_email'], keep='first')]
+            df_filtered['voted_at'] = pd.to_datetime(df_filtered['voted_at'], format='mixed', errors='coerce')
+            df_filtered = df_filtered.sort_values('voted_at')
+            
+            duplicates = df_filtered[df_filtered.duplicated(subset=['voter_email'], keep='first')]
             duplicate_ids = duplicates['id'].tolist()
-            duplicate_emails = df[df.duplicated(subset=['voter_email'], keep=False)]['voter_email'].unique()
+            duplicate_emails = df_filtered[df_filtered.duplicated(subset=['voter_email'], keep=False)]['voter_email'].unique()
             
             duplicate_count = len(duplicate_emails)
             
             if duplicate_count > 0:
-                # PASO 1: Registrar en duplicated_votes (PRIMERO)
                 for email in duplicate_emails:
-                    email_votes = df[df['voter_email'] == email].sort_values('voted_at')
+                    email_votes = df_filtered[df_filtered['voter_email'] == email].sort_values('voted_at')
                     first_vote = email_votes.iloc[0]['voted_at']
                     last_vote = email_votes.iloc[-1]['voted_at']
+                    voter_dni = email_votes.iloc[0].get('voter_dni', 'UNKNOWN')
                     
-                    # Obtener DNI del primer voto
-                    voter_dni = email_votes.iloc[0].get('dni', 'UNKNOWN')
-                    
-                    # Convertir timestamps a string ISO format
                     first_vote_str = first_vote.isoformat() if pd.notna(first_vote) else None
                     last_vote_str = last_vote.isoformat() if pd.notna(last_vote) else None
                     
@@ -198,7 +246,6 @@ class DataCleaningService:
                         "resolved": True
                     }).execute()
                 
-                # PASO 2: Eliminar duplicados de votes (DESPUÉS)
                 for vote_id in duplicate_ids:
                     supabase_client.table("votes").delete().eq("id", vote_id).execute()
             
@@ -206,7 +253,7 @@ class DataCleaningService:
                 "success": True,
                 "duplicate_count": duplicate_count,
                 "total_removed": len(duplicate_ids),
-                "message": f"Se eliminaron {len(duplicate_ids)} votos duplicados de {duplicate_count} emails (guardados en auditoría)"
+                "message": f"Se eliminaron {len(duplicate_ids)} votos duplicados de {duplicate_count} emails"
             }
             
         except Exception as e:
@@ -219,8 +266,8 @@ class DataCleaningService:
     @staticmethod
     async def normalize_data() -> Dict:
         """
-        Normaliza texto: capitaliza nombres, limpia espacios, estandariza ubicaciones.
-        PRIMERO guarda en unnormalized_text_votes, DESPUÉS actualiza votes.
+        Normaliza texto: capitaliza nombres, limpia espacios (excepto 'N/A').
+        INCLUYE: voter_name, voter_location, voter_dni
         """
         try:
             votes_result = supabase_client.table("votes").select("*").execute()
@@ -236,41 +283,51 @@ class DataCleaningService:
             normalized_count = 0
             
             for idx, row in df.iterrows():
-                original_name = row['voter_name']
-                original_location = row['voter_location']
+                original_name = row.get('voter_name')
+                original_location = row.get('voter_location')
+                original_dni = row.get('voter_dni')
                 
-                # Normalizar nombre
-                normalized_name = str(original_name).strip().title() if pd.notna(original_name) else original_name
+                changes = {}
+                
+                # Normalizar nombre (no normalizar si es 'N/A')
+                if 'voter_name' in df.columns:
+                    if pd.notna(original_name) and str(original_name).strip().upper() != 'N/A':
+                        normalized_name = str(original_name).strip().title()
+                        if normalized_name != original_name:
+                            changes['voter_name'] = normalized_name
                 
                 # Normalizar ubicación
-                if pd.notna(original_location):
-                    normalized_location = str(original_location).strip().title()
-                else:
-                    normalized_location = original_location
+                if 'voter_location' in df.columns:
+                    if pd.notna(original_location) and str(original_location).strip().upper() != 'N/A':
+                        normalized_location = str(original_location).strip().title()
+                        if normalized_location != original_location:
+                            changes['voter_location'] = normalized_location
                 
-                # Si hubo cambios, actualizar
-                if normalized_name != original_name or normalized_location != original_location:
-                    # PASO 1: Registrar cambio en unnormalized_text_votes (PRIMERO)
+                # Normalizar DNI (solo limpiar espacios, no capitalizar)
+                if 'voter_dni' in df.columns:
+                    if pd.notna(original_dni) and str(original_dni).strip().upper() != 'N/A':
+                        normalized_dni = str(original_dni).strip()
+                        if normalized_dni != original_dni:
+                            changes['voter_dni'] = normalized_dni
+                
+                if changes:
+                    # Registrar en tabla de auditoría
                     supabase_client.table("unnormalized_text_votes").insert({
                         "vote_id": row['id'],
-                        "field_name": "voter_name/location",
-                        "original_value": f"{original_name} | {original_location}",
-                        "normalized_value": f"{normalized_name} | {normalized_location}",
+                        "field_name": ", ".join(changes.keys()),
+                        "original_value": f"name: {original_name} | location: {original_location} | dni: {original_dni}",
+                        "normalized_value": f"name: {changes.get('voter_name', original_name)} | location: {changes.get('voter_location', original_location)} | dni: {changes.get('voter_dni', original_dni)}",
                         "applied": True
                     }).execute()
                     
-                    # PASO 2: Actualizar en votes (DESPUÉS)
-                    supabase_client.table("votes").update({
-                        "voter_name": normalized_name,
-                        "voter_location": normalized_location
-                    }).eq("id", row['id']).execute()
-                    
+                    # Actualizar en votes
+                    supabase_client.table("votes").update(changes).eq("id", row['id']).execute()
                     normalized_count += 1
             
             return {
                 "success": True,
                 "normalized_count": normalized_count,
-                "message": f"Se normalizaron {normalized_count} registros (cambios guardados en auditoría)"
+                "message": f"Se normalizaron {normalized_count} registros"
             }
             
         except Exception as e:
@@ -282,7 +339,7 @@ class DataCleaningService:
     
     @staticmethod
     async def _save_cleaning_summary(quality_report: Dict):
-        """Guarda resumen de limpieza en la base de datos."""
+        """Guarda resumen de limpieza."""
         try:
             supabase_client.table("data_cleaning_summary").insert({
                 "total_votes": quality_report.get("total_records", 0),
