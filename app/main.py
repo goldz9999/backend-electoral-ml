@@ -2,7 +2,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import get_settings
-from app.routes import electoral  # ✅ NUEVO
+from app.routes import electoral
+from app.routes import clean  
 
 settings = get_settings()
 
@@ -21,8 +22,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Incluir router electoral
+# RUTAS
 app.include_router(electoral.router, prefix=settings.api_prefix, tags=["Electoral"])
+app.include_router(clean.router, prefix=settings.api_prefix, tags=["Data Cleaning"])  # ← FUNCIONA
 
 @app.get("/")
 async def root():
@@ -37,7 +39,6 @@ async def health_check():
     from app.config.settings import supabase_client
     
     try:
-        # Verificar conexión a Supabase
         supabase_client.table("candidates").select("id").limit(1).execute()
         status = "healthy"
         supabase_status = "connected"

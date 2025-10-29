@@ -20,6 +20,8 @@ class VoteRequest(BaseModel):
     candidate_id: int
 
 
+# app/routes/electoral.py
+
 @router.post("/votes")
 async def submit_vote(vote: VoteRequest):
     """
@@ -81,6 +83,7 @@ async def submit_vote(vote: VoteRequest):
             "voter_id": voter_id,
             "voter_name": voter_name,
             "voter_email": vote.email,
+            "voter_dni": vote.dni,  # ← AÑADIR ESTA LÍNEA
             "voter_location": voter_location,
             "voted_at": datetime.utcnow().isoformat(),
             "is_valid": True
@@ -203,3 +206,12 @@ async def get_candidates():
         "candidates": result.data,
         "total": len(result.data)
     }
+
+@router.get("/votes")
+async def get_all_votes():
+    """Obtiene todos los votos de la tabla votes"""
+    try:
+        result = supabase_client.table("votes").select("*").order("voted_at", desc=True).execute()
+        return result.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
