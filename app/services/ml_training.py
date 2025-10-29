@@ -51,23 +51,42 @@ class MLTrainingService:
             
             df = pd.DataFrame(votes_result.data)
             
-            # 2. PREPROCESAMIENTO
-            # Eliminar registros con N/A en campos críticos
+            # 2. PREPROCESAMIENTO - FILTRADO CORREGIDO
             df_clean = df[
                 (df['voter_name'].notna()) & 
-                (df['voter_name'].str.upper() != 'N/A') &
+                (df['voter_name'].str.strip().str.upper() != 'N/A') &
+                (df['voter_dni'].notna()) &
+                (df['voter_dni'].str.strip().str.upper() != 'N/A') &
                 (df['voter_location'].notna()) &
-                (df['voter_location'].str.upper() != 'N/A')
+                (df['voter_location'].str.strip().str.upper() != 'N/A') &
+                (df['candidate_id'].notna()) &
+                (df['voted_at'].notna())
             ].copy()
+            
+            # ✅ RESETEAR ÍNDICE después del filtro
+            df_clean = df_clean.reset_index(drop=True)
             
             if len(df_clean) < 10:
                 return {
                     "success": False,
-                    "error": "Datos insuficientes para entrenar (mínimo 10 registros válidos)"
+                    "error": f"Datos insuficientes. Se requieren mínimo 10 registros válidos. Actualmente: {len(df_clean)} válidos de {len(df)} totales."
                 }
             
             # 3. FEATURE ENGINEERING
             df_clean['voted_at'] = pd.to_datetime(df_clean['voted_at'], errors='coerce')
+            
+            # ✅ Eliminar registros con fechas inválidas (NaT)
+            invalid_dates = df_clean['voted_at'].isna().sum()
+            if invalid_dates > 0:
+                print(f"⚠️ Se encontraron {invalid_dates} registros con fechas inválidas, eliminándolos...")
+                df_clean = df_clean[df_clean['voted_at'].notna()].reset_index(drop=True)
+            
+            if len(df_clean) < 10:
+                return {
+                    "success": False,
+                    "error": f"Después de filtrar fechas inválidas quedan {len(df_clean)} registros. Se requieren mínimo 10."
+                }
+            
             df_clean['hour'] = df_clean['voted_at'].dt.hour
             df_clean['day_of_week'] = df_clean['voted_at'].dt.dayofweek
             df_clean['is_weekend'] = df_clean['day_of_week'].isin([5, 6]).astype(int)
@@ -76,17 +95,53 @@ class MLTrainingService:
             le_location = LabelEncoder()
             df_clean['location_encoded'] = le_location.fit_transform(df_clean['voter_location'])
             
-            # 4. PREPARAR X e y
+            # 4. PREPARAR X e y SEGÚN TIPO DE MODELO
             if model_type == "classification":
                 # Predecir el candidato
-                X = df_clean[['hour', 'day_of_week', 'is_weekend', 'location_encoded']]
-                y = df_clean['candidate_id']
+                X = df_clean[['hour', 'day_of_week', 'is_weekend', 'location_encoded']].copy()
+                y = df_clean['candidate_id'].copy()
+                
+                # Validar distribución de clases
+                class_counts = y.value_counts()
+                
+                # Filtrar candidatos con menos de 2 votos
+                valid_classes = class_counts[class_counts >= 2].index
+                if len(valid_classes) < 2:
+                    return {
+                        "success": False,
+                        "error": f"Se requieren al menos 2 candidatos con mínimo 2 votos cada uno. Distribución: {class_counts.to_dict()}"
+                    }
+                
+                # ✅ Filtrar y resetear índice inmediatamente
+                mask = y.isin(valid_classes)
+                X = X[mask].reset_index(drop=True)
+                y = y[mask].reset_index(drop=True)
+                
+                if len(valid_classes) < class_counts.shape[0]:
+                    excluded = class_counts[class_counts < 2].to_dict()
+                    print(f"⚠️ Se excluyeron candidatos con < 2 votos: {excluded}")
                 
             elif model_type == "regression":
-                # Predecir número de votos por hora (ejemplo)
-                votes_per_hour = df_clean.groupby('hour').size().reset_index(name='vote_count')
-                X = votes_per_hour[['hour']]
-                y = votes_per_hour['vote_count']
+                # ✅ NO USAR GROUPBY - Usar todos los datos
+                X = df_clean[['hour', 'day_of_week', 'is_weekend', 'location_encoded']].copy()
+                
+                # Crear variable target: votos acumulados por hora
+                votes_count_per_hour = df_clean.groupby('hour').size().to_dict()
+                y = df_clean['hour'].map(votes_count_per_hour).copy()
+                
+                # Validación
+                unique_hours = df_clean['hour'].nunique()
+                if unique_hours < 3:
+                    return {
+                        "success": False,
+                        "error": f"Datos insuficientes para regresión. Se requieren votos en al menos 3 horas diferentes. Actualmente: {unique_hours} horas."
+                    }
+                
+                if y.std() < 0.1:
+                    return {
+                        "success": False,
+                        "error": "Los datos tienen muy poca varianza. Agregue más votos en diferentes horas."
+                    }
                 
             else:
                 return {
@@ -94,19 +149,58 @@ class MLTrainingService:
                     "error": "model_type debe ser 'classification' o 'regression'"
                 }
             
+            # ✅ Verificar que no hay NaN
+            if X.isna().any().any():
+                print(f"⚠️ WARNING: X contiene NaN:")
+                print(X.isna().sum())
+                X = X.fillna(X.mean())  # Rellenar con media
+            
+            if y.isna().any():
+                print(f"⚠️ WARNING: y contiene NaN")
+                y = y.fillna(y.mean())
+            
             # 5. NORMALIZAR
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
             
             # 6. DIVIDIR DATOS
+            if model_type == "classification":
+                n_classes = y.nunique()
+                min_test_samples = n_classes * 2
+                
+                calculated_test_size = max(min_test_samples / len(X_scaled), test_size)
+                calculated_test_size = min(calculated_test_size, 0.5)
+                
+                actual_test_size = calculated_test_size
+                
+                if len(X_scaled) < min_test_samples:
+                    return {
+                        "success": False,
+                        "error": f"Datos insuficientes. Con {n_classes} candidatos se requieren mínimo {min_test_samples} votos totales. Actualmente: {len(X_scaled)}."
+                    }
+            else:
+                actual_test_size = min(test_size, 0.3) if len(X_scaled) < 30 else test_size
+            
+            # Desactivar stratify si hay clases pequeñas
+            use_stratify = None
+            if model_type == "classification":
+                min_class_count = y.value_counts().min()
+                use_stratify = y if min_class_count >= 2 else None
+                if use_stratify is None:
+                    print(f"⚠️ Stratify desactivado: clase más pequeña tiene {min_class_count} votos")
+            
             X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=test_size, random_state=random_state
+                X_scaled, y, 
+                test_size=actual_test_size, 
+                random_state=random_state,
+                stratify=use_stratify
             )
             
             # 7. SELECCIONAR MODELO
             model = MLTrainingService._get_model(model_type, algorithm)
             
-            if not model:
+            # ✅ Validar modelo sin usar __len__
+            if model is None:
                 return {
                     "success": False,
                     "error": f"Algoritmo '{algorithm}' no soportado para tipo '{model_type}'"
@@ -115,7 +209,6 @@ class MLTrainingService:
             # 8. REGISTRAR SESIÓN DE ENTRENAMIENTO
             session_start = datetime.utcnow()
             
-            # Crear registro de modelo
             model_record = supabase_client.table("ml_models").insert({
                 "model_name": f"{algorithm}_{model_type}",
                 "model_type": model_type,
@@ -130,16 +223,17 @@ class MLTrainingService:
             
             model_id = model_record.data[0]['id']
             
-            # Crear sesión
             session_record = supabase_client.table("training_sessions").insert({
                 "model_id": model_id,
                 "session_name": f"Training_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
                 "start_time": session_start.isoformat(),
                 "status": "running",
                 "config": json.dumps({
-                    "test_size": test_size,
+                    "test_size": actual_test_size,
                     "random_state": random_state,
-                    "algorithm": algorithm
+                    "algorithm": algorithm,
+                    "original_records": len(df),
+                    "valid_records": len(df_clean)
                 })
             }).execute()
             
@@ -165,7 +259,6 @@ class MLTrainingService:
                     "confusion_matrix": confusion_matrix(y_test, y_pred).tolist()
                 }
                 
-                # Feature importance
                 if hasattr(model, 'feature_importances_'):
                     metrics["feature_importance"] = dict(zip(
                         X.columns.tolist(),
@@ -181,17 +274,19 @@ class MLTrainingService:
                 }
             
             # 11. GUARDAR MÉTRICAS
-            supabase_client.table("model_metrics").insert({
+            metrics_to_save = {
                 "model_id": model_id,
                 "training_session_id": session_id,
                 "accuracy": metrics.get("accuracy"),
                 "precision_score": metrics.get("precision_score"),
                 "recall": metrics.get("recall"),
                 "f1_score": metrics.get("f1_score"),
-                "loss": metrics.get("mse"),
+                "loss": metrics.get("mse") or metrics.get("loss"),
                 "confusion_matrix": json.dumps(metrics.get("confusion_matrix")) if "confusion_matrix" in metrics else None,
                 "feature_importance": json.dumps(metrics.get("feature_importance")) if "feature_importance" in metrics else None
-            }).execute()
+            }
+            
+            supabase_client.table("model_metrics").insert(metrics_to_save).execute()
             
             # 12. ACTUALIZAR SESIÓN
             supabase_client.table("training_sessions").update({
@@ -200,9 +295,8 @@ class MLTrainingService:
                 "status": "completed"
             }).eq("id", session_id).execute()
             
-            # 13. SIMULAR HISTORIAL DE ENTRENAMIENTO (50 epochs)
+            # 13. SIMULAR HISTORIAL
             for epoch in range(1, 51):
-                # Simular pérdida decreciente
                 loss = max(0.05, 0.8 - (epoch * 0.015) + (np.random.random() * 0.05))
                 accuracy = min(0.98, 0.5 + (epoch * 0.009) + (np.random.random() * 0.02))
                 
@@ -224,14 +318,17 @@ class MLTrainingService:
                 "training_time": duration_seconds,
                 "training_samples": len(X_train),
                 "test_samples": len(X_test),
-                "message": f"Modelo {algorithm} entrenado exitosamente"
+                "total_valid_records": len(df_clean),
+                "message": f"Modelo {algorithm} entrenado exitosamente con {len(X_train)} muestras de entrenamiento"
             }
             
         except Exception as e:
             print(f"Error en train_model: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"Error interno: {str(e)}"
             }
     
     @staticmethod
@@ -313,7 +410,6 @@ class MLTrainingService:
     async def get_training_history(model_id: int) -> Dict:
         """Obtiene historial de entrenamiento."""
         try:
-            # Obtener session_id
             session_result = supabase_client.table("training_sessions") \
                 .select("id") \
                 .eq("model_id", model_id) \
@@ -329,7 +425,6 @@ class MLTrainingService:
             
             session_id = session_result.data[0]['id']
             
-            # Obtener historial
             history_result = supabase_client.table("training_history") \
                 .select("*") \
                 .eq("training_session_id", session_id) \
@@ -348,10 +443,10 @@ class MLTrainingService:
     
     @staticmethod
     async def predict(model_id: int, features: Dict) -> Dict:
-        """Realiza predicciones (placeholder - requiere serializar modelo)."""
+        """Realiza predicciones (placeholder)."""
         return {
             "success": False,
-            "error": "Predicción no implementada (requiere serialización de modelo)"
+            "error": "Predicción no implementada"
         }
     
     @staticmethod
