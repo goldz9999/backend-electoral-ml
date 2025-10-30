@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     
     # CORS Configuration
     cors_origins: list[str] = Field(
-        default=["http://localhost:8080", "http://localhost:5173", "https://easy-vote-portal.vercel.app/"],
+        default=["http://localhost:8080", "http://localhost:5173", "https://easy-vote-portal.vercel.app"],
         env="CORS_ORIGINS"
     )
     
