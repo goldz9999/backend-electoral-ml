@@ -12,11 +12,14 @@ class VoteRequest(BaseModel):
     nombre: str = Field(..., min_length=2, max_length=100)
     apellido: str = Field(..., min_length=2, max_length=100)
     dni: str = Field(..., pattern=r'^\d{8}$')
-    email: str = Field(..., pattern=r'^[^@]+@[^@]+\.[^@]+$')  # Validación básica
+    email: str = Field(..., pattern=r'^[^@]+@[^@]+\.[^@]+$')
     celular: str = Field(..., pattern=r'^\d{9}$')
     departamento: str = Field(..., min_length=3)
     provincia: str = Field(..., min_length=3)
     distrito: str = Field(..., min_length=3)
+    edad: int = Field(..., ge=18, le=99)          # ← AGREGAR
+    genero: str = Field(..., min_length=4)        # ← AGREGAR
+    educacion: str = Field(..., min_length=7)     # ← AGREGAR
     candidate_id: int
 
 
@@ -48,15 +51,18 @@ async def submit_vote(vote: VoteRequest):
         else:
             # === 2. Crear nuevo votante ===
             voter_insert = supabase_client.table("voters").insert({
-                "nombre": vote.nombre,
-                "apellido": vote.apellido,
-                "dni": vote.dni,
-                "email": vote.email,
-                "celular": vote.celular,
-                "departamento": vote.departamento,
-                "provincia": vote.provincia,
-                "distrito": vote.distrito,
-                "has_voted": False
+            "nombre": vote.nombre,
+            "apellido": vote.apellido,
+            "dni": vote.dni,
+            "email": vote.email,
+            "celular": vote.celular,
+            "departamento": vote.departamento,
+            "provincia": vote.provincia,
+            "distrito": vote.distrito,
+            "edad": vote.edad,              # ← AGREGAR
+            "genero": vote.genero,          # ← AGREGAR
+            "educacion": vote.educacion,    # ← AGREGAR
+            "has_voted": False
             }).execute()
 
             if not voter_insert.data:
@@ -79,14 +85,17 @@ async def submit_vote(vote: VoteRequest):
         voter_location = f"{vote.distrito}, {vote.provincia}, {vote.departamento}"
 
         vote_insert = supabase_client.table("votes").insert({
-            "candidate_id": vote.candidate_id,
-            "voter_id": voter_id,
-            "voter_name": voter_name,
-            "voter_email": vote.email,
-            "voter_dni": vote.dni,  # ← AÑADIR ESTA LÍNEA
-            "voter_location": voter_location,
-            "voted_at": datetime.utcnow().isoformat(),
-            "is_valid": True
+        "candidate_id": vote.candidate_id,
+        "voter_id": voter_id,
+        "voter_name": voter_name,
+        "voter_email": vote.email,
+        "voter_dni": vote.dni,
+        "voter_location": voter_location,
+        "voter_edad": vote.edad,            # ← AGREGAR
+        "voter_genero": vote.genero,        # ← AGREGAR
+        "voter_educacion": vote.educacion,  # ← AGREGAR
+        "voted_at": datetime.utcnow().isoformat(),
+        "is_valid": True
         }).execute()
 
         if not vote_insert.data:
