@@ -5,6 +5,7 @@ from app.config.settings import get_settings
 from app.routes import electoral
 from app.routes import clean  
 from app.routes import train
+from app.routes import analytics  # ← AGREGAR
 
 settings = get_settings()
 
@@ -25,8 +26,10 @@ app.add_middleware(
 
 # RUTAS
 app.include_router(electoral.router, prefix=settings.api_prefix, tags=["Electoral"])
-app.include_router(clean.router, prefix=settings.api_prefix, tags=["Data Cleaning"])  # ← FUNCIONA
+app.include_router(clean.router, prefix=settings.api_prefix, tags=["Data Cleaning"])
 app.include_router(train.router, prefix=settings.api_prefix, tags=["Model Training"])
+app.include_router(analytics.router, prefix=settings.api_prefix, tags=["Analytics"])  # ← AGREGAR
+
 @app.get("/")
 async def root():
     return {
