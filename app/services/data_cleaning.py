@@ -5,6 +5,19 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 
+def log_action(action: str, table: str, details: dict = None):
+    """Registra acción en audit_logs"""
+    try:
+        supabase_client.table("audit_logs").insert({
+            "user_id": 1,  # Admin (puedes parametrizarlo después)
+            "action": action,
+            "table_name": table,
+            "new_values": details,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        print(f"📝 Audit log: {action} en {table}")
+    except Exception as e:
+        print(f"⚠️ Error guardando audit log: {e}")
 
 class DataCleaningService:
     """
@@ -81,6 +94,14 @@ class DataCleaningService:
             }
             
             await DataCleaningService._save_cleaning_summary(quality_report)
+            log_action(
+            action="ANALYZE_DATA_QUALITY",
+            table="votes",
+            details={
+                "total_records": quality_report.get("total_records", 0),
+                "quality_score": quality_report.get("quality_score", 0)
+                }
+            )
             return quality_report
             
         except Exception as e:
@@ -176,7 +197,15 @@ class DataCleaningService:
                     
                     if update_data:
                         supabase_client.table("votes").update(update_data).eq("id", vote_id).execute()
-            
+            if cleaned_count > 0:
+                log_action(
+                    action="CLEAN_NULL_DATA",
+                    table="votes",
+                    details={
+                        "cleaned_count": cleaned_count,
+                        "fields_affected": ["voter_name", "voter_email", "voter_dni", "voter_location"]
+                    }
+                )
             return {
                 "success": True,
                 "cleaned_count": cleaned_count,
@@ -248,7 +277,15 @@ class DataCleaningService:
                 
                 for vote_id in duplicate_ids:
                     supabase_client.table("votes").delete().eq("id", vote_id).execute()
-            
+            if duplicate_count > 0:
+                log_action(
+                    action="REMOVE_DUPLICATES",
+                    table="votes",
+                    details={
+                        "duplicate_emails": duplicate_count,
+                        "votes_removed": len(duplicate_ids)
+                    }
+                )
             return {
                 "success": True,
                 "duplicate_count": duplicate_count,
@@ -323,7 +360,15 @@ class DataCleaningService:
                     # Actualizar en votes
                     supabase_client.table("votes").update(changes).eq("id", row['id']).execute()
                     normalized_count += 1
-            
+            if normalized_count > 0:
+                log_action(
+                    action="NORMALIZE_DATA",
+                    table="votes",
+                    details={
+                        "normalized_count": normalized_count,
+                        "fields_normalized": ["voter_name", "voter_location", "voter_dni"]
+                    }
+                )
             return {
                 "success": True,
                 "normalized_count": normalized_count,

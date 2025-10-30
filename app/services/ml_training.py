@@ -15,6 +15,19 @@ from sklearn.metrics import (
     mean_squared_error, mean_absolute_error, r2_score
 )
 
+def log_action(action: str, table: str, details: dict = None):
+    """Registra acción en audit_logs"""
+    try:
+        supabase_client.table("audit_logs").insert({
+            "user_id": 1,
+            "action": action,
+            "table_name": table,
+            "new_values": details,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        print(f"📝 Audit log: {action} en {table}")
+    except Exception as e:
+        print(f"⚠️ Error guardando audit log: {e}")
 
 class MLTrainingService:
     """
@@ -233,7 +246,17 @@ class MLTrainingService:
                 "val_accuracy": accuracy * 0.95,
                 "learning_rate": 0.001
             }).execute()
-        
+        log_action(
+            action="TRAIN_MODEL_CLASSIFICATION",
+            table="ml_models",
+            details={
+                "model_id": model_id,
+                "algorithm": algorithm,
+                "accuracy": metrics["accuracy"],
+                "training_samples": len(X_train),
+                "duration_seconds": duration
+            }
+        )
         return {
             "success": True,
             "model_id": model_id,
@@ -499,7 +522,17 @@ class MLTrainingService:
                 "val_accuracy": None,
                 "learning_rate": 0.001
             }).execute()
-        
+        log_action(
+            action="TRAIN_MODEL_REGRESSION",
+            table="ml_models",
+            details={
+                "model_id": model_id,
+                "algorithm": algorithm,
+                "r2_score": r2,
+                "training_samples": len(X_train),
+                "duration_seconds": duration
+            }
+        )
         return {
             "success": True,
             "model_id": model_id,
@@ -558,7 +591,23 @@ class MLTrainingService:
     @staticmethod
     async def delete_model(model_id: int) -> Dict:
         try:
+            # ✅ AGREGAR ANTES DEL DELETE:
+            # Obtener info del modelo antes de eliminarlo
+            model = supabase_client.table("ml_models").select("*").eq("id", model_id).single().execute()
+            
             supabase_client.table("ml_models").delete().eq("id", model_id).execute()
+            
+            # ✅ AGREGAR DESPUÉS DEL DELETE:
+            log_action(
+                action="DELETE_MODEL",
+                table="ml_models",
+                details={
+                    "model_id": model_id,
+                    "model_name": model.data.get("model_name"),
+                    "algorithm": model.data.get("algorithm")
+                }
+            )
+            
             return {"success": True, "message": "Modelo eliminado"}
         except Exception as e:
             return {"success": False, "error": str(e)}

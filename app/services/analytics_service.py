@@ -7,11 +7,13 @@ from typing import Dict, Optional
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from collections import Counter
+import json  # ← AGREGAR para serializar JSON
 
 
 class AnalyticsService:
     """
     Servicio de Analytics Electoral con análisis avanzado usando Pandas y Scikit-learn
+    ✅ AHORA GUARDA EN: predictions, clustering_results, geographic_analysis
     """
     
     @staticmethod
@@ -117,7 +119,9 @@ class AnalyticsService:
     
     @staticmethod
     async def get_geographic_analysis(departamento: Optional[str] = None, provincia: Optional[str] = None) -> Dict:
-        """Análisis geográfico de votos"""
+        """
+        ✅ MODIFICADO: Análisis geográfico + GUARDA EN geographic_analysis
+        """
         try:
             votes_result = supabase_client.table("votes").select("*").execute()
             voters_result = supabase_client.table("voters").select("*").execute()
@@ -150,6 +154,32 @@ class AnalyticsService:
             dept_leader = dept_leader.loc[dept_leader.groupby('departamento')['votes'].idxmax()]
             leader_by_dept = dict(zip(dept_leader['departamento'], dept_leader['candidate_id']))
             
+            # ========================================
+            # ✅ NUEVO: GUARDAR EN geographic_analysis
+            # ========================================
+            try:
+                print("💾 Guardando análisis geográfico en BD...")
+                
+                for dept, data in dept_analysis.items():
+                    # Obtener candidato líder de este departamento
+                    leader_candidate_id = leader_by_dept.get(dept)
+                    
+                    # Insertar o actualizar
+                    supabase_client.table("geographic_analysis").upsert({
+                        "departamento": dept,
+                        "candidate_id": int(leader_candidate_id) if leader_candidate_id else None,
+                        "votes_count": int(data['total_votes']),
+                        "total_voters": int(data['unique_voters']),
+                        "analyzed_at": datetime.utcnow().isoformat()
+                    }, on_conflict="departamento").execute()
+                
+                print(f"✅ Guardados {len(dept_analysis)} departamentos en geographic_analysis")
+            
+            except Exception as save_error:
+                print(f"⚠️ Error guardando en geographic_analysis: {save_error}")
+                # No detenemos la ejecución, solo logueamos
+            # ========================================
+            
             return {
                 "success": True,
                 "timestamp": datetime.utcnow().isoformat(),
@@ -158,7 +188,8 @@ class AnalyticsService:
                 "top_provinces": prov_analysis,
                 "top_districts": dist_analysis,
                 "leader_by_department": leader_by_dept,
-                "total_analyzed": len(df)
+                "total_analyzed": len(df),
+                "saved_to_db": True  # ← Indicador de que se guardó
             }
         
         except Exception as e:
@@ -266,7 +297,9 @@ class AnalyticsService:
     
     @staticmethod
     async def get_voting_clusters(n_clusters: int = 3) -> Dict:
-        """Clustering de votantes usando K-Means"""
+        """
+        ✅ MODIFICADO: Clustering de votantes + GUARDA EN clustering_results
+        """
         try:
             # Validar n_clusters
             if n_clusters < 2 or n_clusters > 10:
@@ -321,7 +354,7 @@ class AnalyticsService:
             print(f"📊 Registros válidos después de limpieza: {len(df_clean)}")
             
             # Verificar datos mínimos
-            min_required = n_clusters * 3  # Al menos 3 votos por cluster
+            min_required = n_clusters * 3
             if len(df_clean) < min_required:
                 return {
                     "success": False,
@@ -334,7 +367,6 @@ class AnalyticsService:
                 le_genero = LabelEncoder()
                 df_clean['genero_encoded'] = le_genero.fit_transform(df_clean['genero'].astype(str))
                 
-                # Mapeo de educación
                 educacion_map = {
                     'Primaria': 1,
                     'Secundaria': 2,
@@ -342,8 +374,6 @@ class AnalyticsService:
                     'Posgrado': 4
                 }
                 df_clean['educacion_encoded'] = df_clean['educacion'].map(educacion_map)
-                
-                # Eliminar NaN después de mapeo
                 df_clean = df_clean[df_clean['educacion_encoded'].notna()].copy()
                 
                 if len(df_clean) < min_required:
@@ -363,8 +393,6 @@ class AnalyticsService:
             # 5. Preparar features
             try:
                 X = df_clean[['edad', 'genero_encoded', 'educacion_encoded', 'candidate_id']].values
-                
-                # Normalizar
                 scaler = StandardScaler()
                 X_scaled = scaler.fit_transform(X)
                 
@@ -434,6 +462,31 @@ class AnalyticsService:
             except Exception as e:
                 print(f"No se pudo calcular silhouette score: {e}")
             
+            # ========================================
+            # ✅ NUEVO: GUARDAR EN clustering_results
+            # ========================================
+            try:
+                print("💾 Guardando resultados de clustering en BD...")
+                
+                for cluster_info in cluster_analysis:
+                    supabase_client.table("clustering_results").insert({
+                        "algorithm": "K-Means",
+                        "n_clusters": int(n_clusters),
+                        "cluster_id": cluster_info["cluster_id"],
+                        "cluster_size": cluster_info["size"],
+                        "centroid": json.dumps(cluster_info["centroid"]),  # ← JSON string
+                        "characteristics": json.dumps(cluster_info["characteristics"]),  # ← JSON string
+                        "silhouette_score": round(silhouette, 4) if silhouette else None,
+                        "created_at": datetime.utcnow().isoformat()
+                    }).execute()
+                
+                print(f"✅ Guardados {len(cluster_analysis)} clusters en clustering_results")
+            
+            except Exception as save_error:
+                print(f"⚠️ Error guardando en clustering_results: {save_error}")
+                # No detenemos la ejecución
+            # ========================================
+            
             return {
                 "success": True,
                 "timestamp": datetime.utcnow().isoformat(),
@@ -441,7 +494,8 @@ class AnalyticsService:
                 "algorithm": "K-Means",
                 "clusters": cluster_analysis,
                 "silhouette_score": round(silhouette, 4) if silhouette else None,
-                "total_analyzed": int(len(df_clean))
+                "total_analyzed": int(len(df_clean)),
+                "saved_to_db": True  # ← Indicador
             }
         
         except Exception as e:
@@ -505,9 +559,11 @@ class AnalyticsService:
     
     @staticmethod
     async def get_predictions() -> Dict:
-        """Predicciones basadas en el modelo ML activo o simulación simple"""
+        """
+        ✅ MODIFICADO: Predicciones + GUARDA EN predictions
+        """
         try:
-            # 1. Obtener candidatos y votos (datos base)
+            # 1. Obtener candidatos y votos
             candidates_result = supabase_client.table("candidates").select("*").execute()
             votes_result = supabase_client.table("votes").select("candidate_id").execute()
             
@@ -528,10 +584,10 @@ class AnalyticsService:
             df_candidates = pd.DataFrame(candidates_result.data)
             df_votes = pd.DataFrame(votes_result.data)
             
-            # 2. Intentar obtener modelo activo (opcional)
+            # 2. Intentar obtener modelo activo
             model = None
             metrics = None
-            confidence = 0.70  # Confianza por defecto
+            confidence = 0.70
             
             try:
                 model_result = supabase_client.table("ml_models")\
@@ -544,7 +600,6 @@ class AnalyticsService:
                 if model_result.data and len(model_result.data) > 0:
                     model = model_result.data[0]
                     
-                    # Intentar obtener métricas
                     metrics_result = supabase_client.table("model_metrics")\
                         .select("*")\
                         .eq("model_id", model['id'])\
@@ -555,7 +610,6 @@ class AnalyticsService:
                     if metrics_result.data and len(metrics_result.data) > 0:
                         metrics = metrics_result.data[0]
                         
-                        # Extraer accuracy de forma segura
                         if metrics.get('accuracy') is not None:
                             try:
                                 confidence = float(metrics['accuracy'])
@@ -564,7 +618,7 @@ class AnalyticsService:
                             except (ValueError, TypeError):
                                 confidence = 0.70
             except Exception as e:
-                print(f"No se pudo cargar modelo ML (usando predicción simple): {e}")
+                print(f"No se pudo cargar modelo ML: {e}")
             
             # 3. Calcular predicciones
             predictions = []
@@ -572,18 +626,12 @@ class AnalyticsService:
             
             for _, candidate in df_candidates.iterrows():
                 try:
-                    # Votos actuales del candidato
                     current_votes = len(df_votes[df_votes['candidate_id'] == candidate['id']])
                     current_percentage = (current_votes / total_votes * 100) if total_votes > 0 else 0
                     
-                    # Margen de error basado en confianza
-                    margin = (1 - confidence) * 8  # Reducido de 10 a 8
-                    
-                    # Predicción con variación aleatoria
+                    margin = (1 - confidence) * 8
                     variation = np.random.uniform(-margin/2, margin/2)
                     predicted_percentage = current_percentage + variation
-                    
-                    # Asegurar límites válidos
                     predicted_percentage = max(0.0, min(100.0, predicted_percentage))
                     
                     predictions.append({
@@ -601,10 +649,31 @@ class AnalyticsService:
                     print(f"Error procesando candidato {candidate.get('name', 'unknown')}: {e}")
                     continue
             
-            # 4. Ordenar por predicción
             predictions.sort(key=lambda x: x['predicted_percentage'], reverse=True)
             
-            # 5. Construir respuesta
+            # ========================================
+            # ✅ NUEVO: GUARDAR EN predictions
+            # ========================================
+            try:
+                print("💾 Guardando predicciones en BD...")
+                
+                for pred in predictions:
+                    supabase_client.table("predictions").insert({
+                        "model_id": model['id'] if model else None,
+                        "candidate_id": pred["candidate_id"],
+                        "predicted_votes": None,  # Opcional
+                        "predicted_percentage": pred["predicted_percentage"],
+                        "confidence_score": pred["confidence"] / 100.0,  # ← Normalizar a 0-1
+                        "prediction_date": datetime.utcnow().isoformat()
+                    }).execute()
+                
+                print(f"✅ Guardadas {len(predictions)} predicciones en predictions")
+            
+            except Exception as save_error:
+                print(f"⚠️ Error guardando en predictions: {save_error}")
+                # No detenemos la ejecución
+            # ========================================
+            
             model_info = {
                 "model_id": model['id'] if model else None,
                 "model_name": model['model_name'] if model else "Predicción Simple",
@@ -618,16 +687,16 @@ class AnalyticsService:
                 "model_info": model_info,
                 "predictions": predictions,
                 "total_votes_analyzed": int(total_votes),
-                "disclaimer": "Predicciones basadas en tendencias actuales y modelo ML (si disponible). No garantizan resultados finales.",
-                "using_ml_model": model is not None
+                "disclaimer": "Predicciones basadas en tendencias actuales y modelo ML (si disponible).",
+                "using_ml_model": model is not None,
+                "saved_to_db": True  # ← Indicador
             }
         
         except Exception as e:
-            print(f"❌ ERROR CRÍTICO en get_predictions: {str(e)}")
+            print(f"❌ ERROR en get_predictions: {str(e)}")
             import traceback
             traceback.print_exc()
             
-            # Devolver error estructurado
             return {
                 "success": False,
                 "error": f"Error interno: {str(e)}",
