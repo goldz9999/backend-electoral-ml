@@ -73,7 +73,11 @@ class MLTrainingService:
                 }
             
             # 3. FEATURE ENGINEERING
-            df_clean['voted_at'] = pd.to_datetime(df_clean['voted_at'], errors='coerce')
+            df_clean['voted_at'] = pd.to_datetime(
+    df_clean['voted_at'], 
+    format='mixed',  # Acepta múltiples formatos
+    errors='coerce'
+)
             
             # ✅ Eliminar registros con fechas inválidas (NaT)
             invalid_dates = df_clean['voted_at'].isna().sum()
@@ -103,6 +107,19 @@ class MLTrainingService:
                 
                 # Validar distribución de clases
                 class_counts = y.value_counts()
+                print("\n🔍 DIAGNÓSTICO DE DATOS:")
+                print(f"Total votos cargados: {len(df)}")
+                print(f"\nCampos con problemas:")
+                print(f"- voter_name NULL/vacío: {df['voter_name'].isna().sum()}")
+                print(f"- voter_dni NULL/vacío: {df['voter_dni'].isna().sum()}")
+                print(f"- voter_location NULL/vacío: {df['voter_location'].isna().sum()}")
+                print(f"- candidate_id NULL: {df['candidate_id'].isna().sum()}")
+                print(f"- voted_at NULL: {df['voted_at'].isna().sum()}")
+
+                print(f"\nTipos de datos:")
+                print(df[['voter_dni', 'voter_location', 'voted_at']].dtypes)
+                print(f"\nEjemplos de datos:")
+                print(df[['voter_name', 'voter_dni', 'voter_location', 'voted_at']].head(10))
                 
                 # Filtrar candidatos con menos de 2 votos
                 valid_classes = class_counts[class_counts >= 2].index
