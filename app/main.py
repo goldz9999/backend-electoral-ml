@@ -2,17 +2,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.settings import get_settings
-from app.routes import electoral
-from app.routes import clean  
-from app.routes import train
-from app.routes import analytics  # ← AGREGAR
+from app.routes import candidatos, votantes, votos, estadisticas
 
 settings = get_settings()
 
 app = FastAPI(
-    title=settings.project_name,
-    description="API Backend Electoral con ML",
-    version="1.0.0"
+    title="Backend Electoral ONPE",
+    description="API Backend Electoral con Supabase",
+    version="2.0.0"
 )
 
 # CORS
@@ -25,16 +22,16 @@ app.add_middleware(
 )
 
 # RUTAS
-app.include_router(electoral.router, prefix=settings.api_prefix, tags=["Electoral"])
-app.include_router(clean.router, prefix=settings.api_prefix, tags=["Data Cleaning"])
-app.include_router(train.router, prefix=settings.api_prefix, tags=["Model Training"])
-app.include_router(analytics.router, prefix=settings.api_prefix, tags=["Analytics"])  # ← AGREGAR
+app.include_router(candidatos.router, prefix="/api/candidatos", tags=["Candidatos"])
+app.include_router(votantes.router, prefix="/api/votantes", tags=["Votantes"])
+app.include_router(votos.router, prefix="/api/votos", tags=["Votos"])
+app.include_router(estadisticas.router, prefix="/api/estadisticas", tags=["Estadísticas"])
 
 @app.get("/")
 async def root():
     return {
-        "message": "Backend Electoral ML API",
-        "version": "1.0.0",
+        "message": "Backend Electoral ONPE API",
+        "version": "2.0.0",
         "docs": "/docs"
     }
 
@@ -43,7 +40,7 @@ async def health_check():
     from app.config.settings import supabase_client
     
     try:
-        supabase_client.table("candidates").select("id").limit(1).execute()
+        supabase_client.table("candidatos").select("id").limit(1).execute()
         status = "healthy"
         supabase_status = "connected"
     except Exception as e:
